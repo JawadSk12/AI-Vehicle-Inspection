@@ -1,0 +1,292 @@
+"""CAPVIA AI - Phase 1: Core Backend Files"""
+import os
+
+ROOT = r"C:\Users\Jawad Shaikh\OneDrive\Downloads\Paint_defect (1)\Paint_defect"
+
+def w(rel, content):
+    full = os.path.join(ROOT, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    print("  OK:", rel)
+
+for rel in [
+    "backend/app/__init__.py", "backend/app/models/__init__.py",
+    "backend/app/schemas/__init__.py", "backend/app/routes/__init__.py",
+    "backend/app/services/__init__.py", "backend/app/utils/__init__.py",
+    "backend/app/reports/__init__.py", "ai_model/__init__.py",
+    "tests/__init__.py", "dataset/__init__.py"
+]:
+    w(rel, "")
+
+w("backend/app/config.py", """from __future__ import annotations
+import json
+from pathlib import Path
+from typing import List
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
+    app_name: str = "CAPVIA AI"
+    app_env: str = "development"
+    debug: bool = True
+    jwt_secret: str = "your-super-secret-jwt-key-minimum-32-chars"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 30
+    jwt_refresh_token_expire_days: int = 7
+    database_url: str = "postgresql+asyncpg://capvia:capvia_secure_password@localhost:5432/capvia_ai"
+    model_path: str = "ai_model/weights/best_rtdetr.pt"
+    model_confidence: float = 0.25
+    model_iou_threshold: float = 0.45
+    model_img_size: int = 1024
+    use_sam: bool = False
+    upload_dir: str = "storage/uploads"
+    result_dir: str = "storage/results"
+    report_dir: str = "storage/reports"
+    mask_dir: str = "storage/masks"
+    max_upload_size_mb: int = 20
+    default_scale_factor: float = 0.05
+    default_image_dpi: int = 96
+    cors_origins: str = '["http://localhost:3000","http://localhost"]'
+    onnx_model_path: str = "ai_model/weights/best.onnx"
+    use_onnx: bool = False
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return json.loads(self.cors_origins)
+
+    def ensure_directories(self) -> None:
+        for d in [self.upload_dir, self.result_dir, self.report_dir, self.mask_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+settings = Settings()
+""")
+
+w("backend/app/database.py", """from __future__ import annotations
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
+from app.config import settings
+
+engine = create_async_engine(settings.database_url, echo=settings.debug, pool_pre_ping=True, pool_size=10, max_overflow=20)
+async_session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+class Base(DeclarativeBase):
+    pass
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+async def create_tables() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+""")
+
+w("backend/app/models/user.py", """from __future__ import annotations
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.database import Base
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    role: Mapped[str] = mapped_column(String(50), default="user")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    inspections: Mapped[list] = relationship("Inspection", back_populates="user", cascade="all, delete-orphan")
+""")
+
+w("backend/app/models/inspection.py", """from __future__ import annotations
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.database import Base
+
+class Inspection(Base):
+    __tablename__ = "inspections"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    vehicle_number: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    vehicle_model: Mapped[str] = mapped_column(String(120), nullable=True)
+    owner_name: Mapped[str] = mapped_column(String(120), nullable=True)
+    inspector_name: Mapped[str] = mapped_column(String(120), nullable=True)
+    image_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    result_path: Mapped[str] = mapped_column(String(512), nullable=True)
+    mask_path: Mapped[str] = mapped_column(String(512), nullable=True)
+    polygon_path: Mapped[str] = mapped_column(String(512), nullable=True)
+    defects: Mapped[list] = mapped_column(JSON, nullable=True)
+    severity_score: Mapped[float] = mapped_column(Float, nullable=True)
+    severity_label: Mapped[str] = mapped_column(String(30), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=True)
+    total_area_mm2: Mapped[float] = mapped_column(Float, nullable=True)
+    defect_count: Mapped[int] = mapped_column(Integer, nullable=True)
+    repair_cost_min: Mapped[float] = mapped_column(Float, nullable=True)
+    repair_cost_max: Mapped[float] = mapped_column(Float, nullable=True)
+    repair_cost_estimated: Mapped[float] = mapped_column(Float, nullable=True)
+    time_required: Mapped[str] = mapped_column(String(50), nullable=True)
+    priority: Mapped[str] = mapped_column(String(30), nullable=True)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    user: Mapped["User"] = relationship("User", back_populates="inspections")
+    report: Mapped["Report"] = relationship("Report", back_populates="inspection", uselist=False, cascade="all, delete-orphan")
+""")
+
+w("backend/app/models/report.py", """from __future__ import annotations
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.database import Base
+
+class Report(Base):
+    __tablename__ = "reports"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    inspection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("inspections.id"), unique=True, nullable=False)
+    pdf_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    inspection: Mapped["Inspection"] = relationship("Inspection", back_populates="report")
+""")
+
+w("backend/app/schemas/user.py", """from __future__ import annotations
+import uuid
+from datetime import datetime
+from pydantic import BaseModel, EmailStr, Field
+
+class UserCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserOut
+""")
+
+w("backend/app/schemas/inspection.py", """from __future__ import annotations
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+class DefectItem(BaseModel):
+    defect_id: int
+    class_name: str
+    confidence: float
+    bbox: List[float]
+    area_px: float
+    area_mm2: float
+    length_mm: float
+    width_mm: float
+    perimeter_mm: float
+    panel: Optional[str] = None
+    is_glare: bool = False
+    glare_score: float = 0.0
+
+class InspectionCreate(BaseModel):
+    vehicle_number: str = Field(..., min_length=2, max_length=30)
+    vehicle_model: Optional[str] = None
+    owner_name: Optional[str] = None
+    inspector_name: Optional[str] = None
+
+class InspectionOut(BaseModel):
+    id: uuid.UUID
+    vehicle_number: str
+    vehicle_model: Optional[str] = None
+    owner_name: Optional[str] = None
+    inspector_name: Optional[str] = None
+    image_path: str
+    result_path: Optional[str] = None
+    mask_path: Optional[str] = None
+    defects: Optional[List[Dict[str, Any]]] = None
+    severity_score: Optional[float] = None
+    severity_label: Optional[str] = None
+    confidence: Optional[float] = None
+    total_area_mm2: Optional[float] = None
+    defect_count: Optional[int] = None
+    repair_cost_min: Optional[float] = None
+    repair_cost_max: Optional[float] = None
+    repair_cost_estimated: Optional[float] = None
+    time_required: Optional[str] = None
+    priority: Optional[str] = None
+    recommendation: Optional[str] = None
+    created_at: datetime
+    has_report: bool = False
+    model_config = {"from_attributes": True}
+
+class InspectionListOut(BaseModel):
+    total: int
+    page: int
+    limit: int
+    items: List[InspectionOut]
+""")
+
+w("backend/app/schemas/report.py", """from __future__ import annotations
+import uuid
+from datetime import datetime
+from pydantic import BaseModel
+
+class ReportOut(BaseModel):
+    id: uuid.UUID
+    inspection_id: uuid.UUID
+    pdf_path: str
+    generated_at: datetime
+    model_config = {"from_attributes": True}
+""")
+
+w("backend/app/schemas/dashboard.py", """from __future__ import annotations
+from typing import List
+from pydantic import BaseModel
+
+class MonthlyCount(BaseModel):
+    month: str
+    count: int
+    avg_cost: float
+
+class SeverityCount(BaseModel):
+    label: str
+    count: int
+    percentage: float
+
+class DashboardOut(BaseModel):
+    total_inspections: int
+    critical_defects: int
+    avg_severity: float
+    avg_repair_cost: float
+    monthly_inspections: List[MonthlyCount]
+    severity_distribution: List[SeverityCount]
+    recent_inspections: list
+""")
+
+print("PHASE 1 COMPLETE")

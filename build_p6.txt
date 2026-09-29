@@ -1,0 +1,209 @@
+"""CAPVIA AI - Phase 6: .gitignore, pytest.ini, .env.example (overwrite), project structure finalization"""
+import os
+
+ROOT = r"C:\Users\Jawad Shaikh\OneDrive\Downloads\Paint_defect (1)\Paint_defect"
+
+def w(rel, content):
+    full = os.path.join(ROOT, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    print("  OK:", rel)
+
+w(".gitignore", """# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+*.env
+!.env.example
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Storage (media files)
+storage/uploads/*
+storage/results/*
+storage/masks/*
+!storage/*/.gitkeep
+
+# Keep reports (optional, comment out to exclude)
+# storage/reports/*
+
+# AI Weights
+ai_model/weights/*.pt
+ai_model/weights/*.onnx
+!ai_model/weights/.gitkeep
+
+# Dataset images (large - tracked separately)
+car-scratches-1/train/images/
+car-scratches-1/valid/images/
+car-scratches-1/test/images/
+
+# YOLO Runs
+runs/
+
+# IDE / OS
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+.cursor/
+
+# Test artifacts
+.coverage
+htmlcov/
+test_capvia.db
+pytest_cache/
+.pytest_cache/
+""")
+
+w("pytest.ini", """[pytest]
+asyncio_mode = auto
+testpaths = tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+addopts = -v --tb=short
+filterwarnings =
+    ignore::DeprecationWarning
+    ignore::PendingDeprecationWarning
+""")
+
+w("backend/.env.local", """# Local development overrides
+APP_ENV=development
+DEBUG=true
+JWT_SECRET=local-dev-jwt-secret-change-in-production-32chars
+DATABASE_URL=postgresql+asyncpg://capvia:capvia_secure_password@localhost:5432/capvia_ai
+MODEL_PATH=../ai_model/weights/best_rtdetr.pt
+UPLOAD_DIR=../storage/uploads
+RESULT_DIR=../storage/results
+REPORT_DIR=../storage/reports
+MASK_DIR=../storage/masks
+CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+""")
+
+w("scripts/start_dev.bat", r"""@echo off
+echo Starting CAPVIA AI Development Environment...
+echo.
+
+echo [1/3] Starting backend (FastAPI)...
+start cmd /k "cd /d %~dp0..\backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+
+echo [2/3] Starting frontend (Vite)...
+start cmd /k "cd /d %~dp0..\frontend && npm run dev"
+
+echo.
+echo CAPVIA AI is starting:
+echo   Frontend: http://localhost:3000
+echo   Backend API: http://localhost:8000/api/docs
+echo.
+""")
+
+w("scripts/run_tests.bat", r"""@echo off
+echo Running CAPVIA AI test suite...
+echo.
+cd /d %~dp0..
+python -m pytest tests/ -v --cov=backend/app --cov-report=term-missing --cov-report=html:htmlcov
+echo.
+echo Test coverage report saved to htmlcov/index.html
+""")
+
+w("scripts/train_model.bat", r"""@echo off
+echo Training RT-DETR v2 Large model...
+echo.
+cd /d %~dp0..
+python ai_model/train_rtdetr.py --epochs 150 --imgsz 1024 --batch -1 --device 0
+echo.
+echo Training complete! Weights saved to ai_model/weights/
+""")
+
+w("Makefile", """# CAPVIA AI - Development Commands
+
+.PHONY: dev dev-backend dev-frontend build test train audit docker-up docker-down clean
+
+dev: ## Start both backend and frontend in development
+	@echo "Starting CAPVIA AI development servers..."
+	@start scripts\\start_dev.bat
+
+dev-backend: ## Start FastAPI backend
+	cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+dev-frontend: ## Start Vite frontend
+	cd frontend && npm run dev
+
+build: ## Build frontend for production
+	cd frontend && npm run build
+
+test: ## Run test suite with coverage
+	pytest tests/ -v --cov=backend/app --cov-report=term-missing
+
+train: ## Train RT-DETR v2 model
+	python ai_model/train_rtdetr.py --epochs 150 --imgsz 1024
+
+audit: ## Audit dataset quality
+	python dataset/audit_dataset.py --root car-scratches-1
+
+docker-up: ## Start all services with Docker Compose
+	docker compose up --build -d
+
+docker-down: ## Stop all Docker services
+	docker compose down
+
+docker-logs: ## View Docker logs
+	docker compose logs -f
+
+clean: ## Clean generated files
+	rmdir /s /q __pycache__ 2>nul
+	rmdir /s /q .pytest_cache 2>nul
+	del /f test_capvia.db 2>nul
+
+install-backend: ## Install backend Python dependencies
+	pip install -r backend/requirements.txt
+
+install-frontend: ## Install frontend Node dependencies
+	cd frontend && npm install
+
+help: ## Show this help
+	@echo CAPVIA AI - Available commands:
+	@echo   make dev            Start development servers
+	@echo   make dev-backend    Start FastAPI only
+	@echo   make dev-frontend   Start Vite only
+	@echo   make test           Run test suite
+	@echo   make train          Train RT-DETR v2 model
+	@echo   make audit          Audit dataset
+	@echo   make docker-up      Docker Compose up
+	@echo   make docker-down    Docker Compose down
+""")
+
+print("\nPHASE 6 COMPLETE: .gitignore, pytest.ini, scripts, Makefile written")
+print("\n========================================================")
+print("CAPVIA AI - ALL PHASES COMPLETE")
+print("========================================================")
+print("Project structure:")
+for root_dir, dirs, files in os.walk(ROOT):
+    dirs[:] = [d for d in dirs if d not in ['node_modules','__pycache__','.git','dist','.vite','venv','env','.venv']]
+    level = root_dir.replace(ROOT,'').count(os.sep)
+    if level > 4: continue
+    indent = '  ' * level
+    rel = os.path.relpath(root_dir, ROOT)
+    if rel != '.':
+        print(f"{indent}[{os.path.basename(root_dir)}/]")
+    subindent = '  ' * (level + 1)
+    for f in files:
+        if f.endswith(('.jpg','.png','.jpeg','.txt')) and 'car-scratches' in root_dir:
+            continue
+        if f.startswith('.'):
+            continue
+        print(f"{subindent}{f}")
+"""

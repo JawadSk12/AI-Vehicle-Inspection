@@ -1,0 +1,17 @@
+# CAPVIA AI - RT-DETR v2 Dataset Configuration
+path: car-scratches-1
+train: train/images
+val:   valid/images
+test:  test/images
+nc: 1
+names:
+  0: scratch
+  # Future classes (add annotations to unlock):
+  # 1: paint_crack
+  # 2: paint_peel
+  # 3: dent
+  # 4: surface_damage
+  # 5: dirt_nib
+  # 6: orange_peel
+  # 7: paint_run
+  # 8: fisheye

@@ -1,0 +1,680 @@
+"""CAPVIA AI - Phase 5: Frontend Source Files"""
+import os
+
+ROOT = r"C:\Users\Jawad Shaikh\OneDrive\Downloads\Paint_defect (1)\Paint_defect"
+FE = os.path.join(ROOT, "frontend")
+
+def w(rel, content):
+    full = os.path.join(FE, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    print("  OK:", rel)
+
+# ── TYPES ────────────────────────────────────────────────────────────────────
+w("src/types/index.ts", """export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface Token {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  user: User;
+}
+
+export interface DefectItem {
+  defect_id: number;
+  class_name: string;
+  confidence: number;
+  bbox: number[];
+  area_px: number;
+  area_mm2: number;
+  length_mm: number;
+  width_mm: number;
+  perimeter_mm: number;
+  panel?: string;
+  is_glare: boolean;
+  glare_score: number;
+}
+
+export interface Inspection {
+  id: string;
+  vehicle_number: string;
+  vehicle_model?: string;
+  owner_name?: string;
+  inspector_name?: string;
+  image_path: string;
+  result_path?: string;
+  mask_path?: string;
+  defects?: DefectItem[];
+  severity_score?: number;
+  severity_label?: string;
+  confidence?: number;
+  total_area_mm2?: number;
+  defect_count?: number;
+  repair_cost_min?: number;
+  repair_cost_max?: number;
+  repair_cost_estimated?: number;
+  time_required?: string;
+  priority?: string;
+  recommendation?: string;
+  created_at: string;
+  has_report: boolean;
+}
+
+export interface InspectionList {
+  total: number;
+  page: number;
+  limit: number;
+  items: Inspection[];
+}
+
+export interface MonthlyCount { month: string; count: number; avg_cost: number; }
+export interface SeverityCount { label: string; count: number; percentage: number; }
+
+export interface DashboardData {
+  total_inspections: number;
+  critical_defects: number;
+  avg_severity: number;
+  avg_repair_cost: number;
+  monthly_inspections: MonthlyCount[];
+  severity_distribution: SeverityCount[];
+  recent_inspections: Inspection[];
+}
+
+export type SeverityLabel = 'Minor' | 'Low' | 'Moderate' | 'High' | 'Critical';
+""")
+
+# ── LIB/API ──────────────────────────────────────────────────────────────────
+w("src/lib/api.ts", """import axios from 'axios';
+
+const api = axios.create({
+  baseURL: '/api',
+  timeout: 120000,
+});
+
+// Attach JWT token to every request
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('access_token');
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// Handle 401 - clear token and redirect to login
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+export const authApi = {
+  register: (data: { name: string; email: string; password: string }) =>
+    api.post('/auth/register', data),
+  login: (data: { email: string; password: string }) =>
+    api.post('/auth/login', data),
+  profile: () => api.get('/auth/profile'),
+};
+
+// ── Inspections ───────────────────────────────────────────────────────────
+export const inspectionsApi = {
+  list: (params?: { page?: number; limit?: number; search?: string; severity?: string }) =>
+    api.get('/inspections', { params }),
+  get: (id: string) => api.get(`/inspections/${id}`),
+  delete: (id: string) => api.delete(`/inspections/${id}`),
+  exportCsv: (id: string) => api.get(`/inspections/${id}/csv`, { responseType: 'blob' }),
+};
+
+// ── Predict ───────────────────────────────────────────────────────────────
+export const predictApi = {
+  predict: (formData: FormData) =>
+    api.post('/predict', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+};
+
+// ── Reports ───────────────────────────────────────────────────────────────
+export const reportsApi = {
+  generate: (inspectionId: string) => api.post(`/reports/${inspectionId}/generate`),
+  download: (inspectionId: string) =>
+    api.get(`/reports/${inspectionId}`, { responseType: 'blob' }),
+};
+
+// ── Dashboard ─────────────────────────────────────────────────────────────
+export const dashboardApi = {
+  get: () => api.get('/dashboard'),
+};
+""")
+
+# ── LIB/AUTH CONTEXT ─────────────────────────────────────────────────────────
+w("src/lib/auth.tsx", """import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { User } from '@/types';
+
+interface AuthContextType {
+  user: User | null;
+  isAuthenticated: boolean;
+  login: (token: string, refresh: string, user: User) => void;
+  logout: () => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(() => {
+    const stored = localStorage.getItem('user');
+    return stored ? JSON.parse(stored) : null;
+  });
+
+  const isAuthenticated = Boolean(user && localStorage.getItem('access_token'));
+
+  const login = (token: string, refresh: string, userData: User) => {
+    localStorage.setItem('access_token', token);
+    localStorage.setItem('refresh_token', refresh);
+    localStorage.setItem('user', JSON.stringify(userData));
+    setUser(userData);
+  };
+
+  const logout = () => {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('user');
+    setUser(null);
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, isAuthenticated, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}
+""")
+
+# ── LIB/UTILS ────────────────────────────────────────────────────────────────
+w("src/lib/utils.ts", """import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+import { SeverityLabel } from '@/types';
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export function formatINR(amount: number): string {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency', currency: 'INR', maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+export function formatDate(dateStr: string): string {
+  return new Date(dateStr).toLocaleDateString('en-IN', {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+export function severityBadgeClass(label?: string): string {
+  switch (label) {
+    case 'Minor':    return 'badge-severity-minor';
+    case 'Low':      return 'badge-severity-low';
+    case 'Moderate': return 'badge-severity-moderate';
+    case 'High':     return 'badge-severity-high';
+    case 'Critical': return 'badge-severity-critical';
+    default:         return 'badge-severity-minor';
+  }
+}
+
+export function severityColor(label?: string): string {
+  switch (label) {
+    case 'Minor':    return '#22c55e';
+    case 'Low':      return '#84cc16';
+    case 'Moderate': return '#f59e0b';
+    case 'High':     return '#f97316';
+    case 'Critical': return '#ef4444';
+    default:         return '#64748b';
+  }
+}
+
+export function getStorageUrl(path: string): string {
+  if (!path) return '';
+  const normalized = path.replace(/\\\\/g, '/');
+  const parts = normalized.split('/storage/');
+  if (parts.length > 1) return `/storage/${parts[parts.length - 1]}`;
+  return path;
+}
+
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+""")
+
+# ── MAIN.TSX ──────────────────────────────────────────────────────────────────
+w("src/main.tsx", """import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter } from 'react-router-dom';
+import { AuthProvider } from '@/lib/auth';
+import App from './App';
+import './index.css';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { staleTime: 30_000, retry: 1 },
+  },
+});
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </BrowserRouter>
+    </QueryClientProvider>
+  </React.StrictMode>
+);
+""")
+
+# ── APP.TSX ───────────────────────────────────────────────────────────────────
+w("src/App.tsx", """import { Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from '@/lib/auth';
+import Layout from '@/components/Layout/Layout';
+import Login from '@/pages/Login';
+import Register from '@/pages/Register';
+import Dashboard from '@/pages/Dashboard';
+import NewInspection from '@/pages/NewInspection';
+import ResultPage from '@/pages/ResultPage';
+import History from '@/pages/History';
+import Profile from '@/pages/Profile';
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
+}
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/login"    element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route path="dashboard"       element={<Dashboard />} />
+        <Route path="new-inspection"  element={<NewInspection />} />
+        <Route path="inspection/:id"  element={<ResultPage />} />
+        <Route path="history"         element={<History />} />
+        <Route path="profile"         element={<Profile />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+    </Routes>
+  );
+}
+""")
+
+# ── LAYOUT ────────────────────────────────────────────────────────────────────
+w("src/components/Layout/Layout.tsx", """import { useState } from 'react';
+import { Outlet } from 'react-router-dom';
+import Sidebar from './Sidebar';
+import Header from './Header';
+
+export default function Layout() {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  return (
+    <div className="flex h-screen overflow-hidden bg-surface-950">
+      <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
+      <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+        <Header onMenuClick={() => setSidebarOpen(o => !o)} />
+        <main className="flex-1 overflow-y-auto p-6 animate-fade-in">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+""")
+
+w("src/components/Layout/Sidebar.tsx", """import { NavLink } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  LayoutDashboard, PlusCircle, History, User,
+  ChevronLeft, Scan, Zap
+} from 'lucide-react';
+
+const navItems = [
+  { to: '/dashboard',      icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/new-inspection', icon: PlusCircle,       label: 'New Inspection' },
+  { to: '/history',        icon: History,          label: 'History' },
+  { to: '/profile',        icon: User,             label: 'Profile' },
+];
+
+interface SidebarProps { open: boolean; onToggle: () => void; }
+
+export default function Sidebar({ open, onToggle }: SidebarProps) {
+  return (
+    <AnimatePresence initial={false}>
+      <motion.aside
+        animate={{ width: open ? 240 : 72 }}
+        transition={{ duration: 0.25, ease: 'easeInOut' }}
+        className="relative flex flex-col bg-surface-900 border-r border-surface-800 overflow-hidden flex-shrink-0"
+      >
+        {/* Logo */}
+        <div className="flex items-center gap-3 px-4 py-5 border-b border-surface-800">
+          <div className="w-9 h-9 bg-primary-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-glow">
+            <Scan size={18} className="text-white" />
+          </div>
+          <AnimatePresence>
+            {open && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
+                <div className="font-bold text-surface-50 whitespace-nowrap leading-tight">CAPVIA AI</div>
+                <div className="text-xs text-surface-500 whitespace-nowrap">Paint Defect Platform</div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 py-4 px-2 flex flex-col gap-1">
+          {navItems.map(({ to, icon: Icon, label }) => (
+            <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'nav-item-active' : 'nav-item'}>
+              <Icon size={20} className="flex-shrink-0" />
+              <AnimatePresence>
+                {open && (
+                  <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="whitespace-nowrap text-sm">
+                    {label}
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </NavLink>
+          ))}
+        </nav>
+
+        {/* Version / AI Badge */}
+        <div className="p-3 border-t border-surface-800">
+          <div className={`flex items-center gap-2 bg-primary-950/60 border border-primary-800/40 rounded-xl px-3 py-2 ${!open ? 'justify-center' : ''}`}>
+            <Zap size={14} className="text-primary-400 flex-shrink-0" />
+            {open && <span className="text-xs text-primary-400 font-medium whitespace-nowrap">RT-DETR v2 AI</span>}
+          </div>
+        </div>
+
+        {/* Toggle button */}
+        <button
+          onClick={onToggle}
+          className="absolute top-5 -right-3 w-6 h-6 bg-surface-700 border border-surface-600 rounded-full flex items-center justify-center hover:bg-surface-600 transition-colors z-10"
+        >
+          <motion.div animate={{ rotate: open ? 0 : 180 }} transition={{ duration: 0.25 }}>
+            <ChevronLeft size={12} className="text-surface-300" />
+          </motion.div>
+        </button>
+      </motion.aside>
+    </AnimatePresence>
+  );
+}
+""")
+
+w("src/components/Layout/Header.tsx", """import { Menu, Bell } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { useNavigate } from 'react-router-dom';
+
+interface HeaderProps { onMenuClick: () => void; }
+
+export default function Header({ onMenuClick }: HeaderProps) {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  return (
+    <header className="flex items-center justify-between px-6 py-4 bg-surface-900/80 backdrop-blur-md border-b border-surface-800 flex-shrink-0">
+      <div className="flex items-center gap-4">
+        <button onClick={onMenuClick} className="btn-ghost p-2 rounded-lg">
+          <Menu size={20} />
+        </button>
+        <div className="hidden md:flex items-center gap-2 text-sm text-surface-400">
+          <span>Automated Vehicle Quality Inspection System</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button className="btn-ghost p-2 rounded-lg relative">
+          <Bell size={18} />
+        </button>
+        <div className="flex items-center gap-3">
+          <div className="text-right hidden sm:block">
+            <div className="text-sm font-semibold text-surface-100">{user?.name}</div>
+            <div className="text-xs text-surface-500">{user?.email}</div>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="w-9 h-9 bg-primary-600 rounded-full flex items-center justify-center text-white font-bold text-sm hover:bg-primary-500 transition-colors"
+            title="Logout"
+          >
+            {user?.name?.charAt(0).toUpperCase()}
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+""")
+
+# ── PAGES: LOGIN ─────────────────────────────────────────────────────────────
+w("src/pages/Login.tsx", """import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Scan, Eye, EyeOff, Loader2, AlertCircle } from 'lucide-react';
+import { authApi } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
+import { Token } from '@/types';
+
+export default function Login() {
+  const navigate = useNavigate();
+  const { login } = useAuth();
+  const [form, setForm] = useState({ email: '', password: '' });
+  const [showPwd, setShowPwd] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const { data } = await authApi.login(form) as { data: Token };
+      login(data.access_token, data.refresh_token, data.user);
+      navigate('/dashboard');
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Invalid credentials. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-surface-950 relative overflow-hidden">
+      {/* Background orbs */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary-600/10 rounded-full blur-3xl animate-pulse-slow" />
+        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-accent-500/8 rounded-full blur-3xl animate-pulse-slow" style={{animationDelay:'1.5s'}} />
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md mx-4 relative z-10"
+      >
+        {/* Glass card */}
+        <div className="glass-card p-8">
+          {/* Logo */}
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl shadow-glow mb-4">
+              <Scan size={28} className="text-white" />
+            </div>
+            <h1 className="text-2xl font-bold text-surface-50">CAPVIA AI</h1>
+            <p className="text-surface-400 text-sm mt-1">Paint Defect Detection Platform</p>
+          </div>
+
+          <h2 className="text-lg font-semibold text-surface-100 mb-6">Sign in to your account</h2>
+
+          {error && (
+            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl px-4 py-3 mb-5 text-sm">
+              <AlertCircle size={16} />
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div>
+              <label className="label">Email address</label>
+              <input
+                type="email" required placeholder="you@example.com"
+                className="input-field"
+                value={form.email}
+                onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
+              />
+            </div>
+
+            <div>
+              <label className="label">Password</label>
+              <div className="relative">
+                <input
+                  type={showPwd ? 'text' : 'password'} required placeholder="••••••••"
+                  className="input-field pr-10"
+                  value={form.password}
+                  onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
+                />
+                <button type="button" onClick={() => setShowPwd(p => !p)} className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-300">
+                  {showPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" disabled={loading} className="btn-primary mt-2 flex items-center justify-center gap-2">
+              {loading ? <><Loader2 size={18} className="animate-spin" />Signing in...</> : 'Sign In'}
+            </button>
+          </form>
+
+          <p className="text-center text-surface-500 text-sm mt-6">
+            Don't have an account?{' '}
+            <Link to="/register" className="text-primary-400 hover:text-primary-300 font-medium transition-colors">
+              Create one
+            </Link>
+          </p>
+        </div>
+
+        <p className="text-center text-surface-600 text-xs mt-4">
+          &copy; 2024 CAPVIA AI &mdash; Automated Vehicle Quality Inspection System
+        </p>
+      </motion.div>
+    </div>
+  );
+}
+""")
+
+# ── PAGES: REGISTER ───────────────────────────────────────────────────────────
+w("src/pages/Register.tsx", """import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Scan, Loader2, AlertCircle, CheckCircle } from 'lucide-react';
+import { authApi } from '@/lib/api';
+
+export default function Register() {
+  const navigate = useNavigate();
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      await authApi.register(form);
+      setSuccess(true);
+      setTimeout(() => navigate('/login'), 2000);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Registration failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-surface-950 relative overflow-hidden">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-accent-500/8 rounded-full blur-3xl animate-pulse-slow" />
+      </div>
+      <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }} className="w-full max-w-md mx-4 relative z-10">
+        <div className="glass-card p-8">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl shadow-glow mb-4">
+              <Scan size={28} className="text-white" />
+            </div>
+            <h1 className="text-2xl font-bold text-surface-50">Create Account</h1>
+            <p className="text-surface-400 text-sm mt-1">Join CAPVIA AI Platform</p>
+          </div>
+          {error && (
+            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl px-4 py-3 mb-5 text-sm">
+              <AlertCircle size={16} />{error}
+            </div>
+          )}
+          {success && (
+            <div className="flex items-center gap-2 bg-green-500/10 border border-green-500/30 text-green-400 rounded-xl px-4 py-3 mb-5 text-sm">
+              <CheckCircle size={16} />Account created! Redirecting to login...
+            </div>
+          )}
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div>
+              <label className="label">Full Name</label>
+              <input type="text" required placeholder="John Doe" className="input-field" value={form.name} onChange={e => setForm(p=>({...p,name:e.target.value}))} />
+            </div>
+            <div>
+              <label className="label">Email address</label>
+              <input type="email" required placeholder="you@example.com" className="input-field" value={form.email} onChange={e => setForm(p=>({...p,email:e.target.value}))} />
+            </div>
+            <div>
+              <label className="label">Password</label>
+              <input type="password" required minLength={8} placeholder="Min 8 characters" className="input-field" value={form.password} onChange={e => setForm(p=>({...p,password:e.target.value}))} />
+            </div>
+            <button type="submit" disabled={loading||success} className="btn-primary mt-2 flex items-center justify-center gap-2">
+              {loading ? <><Loader2 size={18} className="animate-spin"/>Creating...</> : 'Create Account'}
+            </button>
+          </form>
+          <p className="text-center text-surface-500 text-sm mt-6">
+            Already have an account?{' '}
+            <Link to="/login" className="text-primary-400 hover:text-primary-300 font-medium transition-colors">Sign in</Link>
+          </p>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+""")
+
+print("Frontend source files phase 5a written")

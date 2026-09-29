@@ -1,0 +1,16 @@
+"""
+CAPVIA AI - Database Session & Connection Management
+Re-exports database engine, session factory, Base, and helper utilities.
+"""
+from __future__ import annotations
+import sys
+from pathlib import Path
+
+# Ensure backend directory is in sys.path
+backend_dir = Path(__file__).resolve().parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+
+from app.database import Base, engine, async_session_factory, get_db, create_tables
+
+__all__ = ["Base", "engine", "async_session_factory", "get_db", "create_tables"]

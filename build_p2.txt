@@ -1,0 +1,637 @@
+"""CAPVIA AI - Phase 2: Services, Utils, Routes"""
+import os
+
+ROOT = r"C:\Users\Jawad Shaikh\OneDrive\Downloads\Paint_defect (1)\Paint_defect"
+
+def w(rel, content):
+    full = os.path.join(ROOT, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    print("  OK:", rel)
+
+# ── AUTH SERVICE ────────────────────────────────────────────────────────────
+w("backend/app/services/auth_service.py", """from __future__ import annotations
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from app.config import settings
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.jwt_access_token_expire_minutes))
+    to_encode.update({"exp": expire, "type": "access"})
+    return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+def create_refresh_token(data: dict) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_token_expire_days)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+def decode_token(token: str) -> dict:
+    return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+""")
+
+# ── SEVERITY SERVICE ────────────────────────────────────────────────────────
+w("backend/app/services/severity_service.py", """from __future__ import annotations
+from typing import Any, Dict, List, Tuple
+
+CLASS_PENALTY: Dict[str, float] = {
+    "scratch": 0.5, "paint_crack": 0.8, "paint_peel": 0.7,
+    "dent": 0.9, "surface_damage": 0.6, "dirt_nib": 0.3,
+    "orange_peel": 0.4, "paint_run": 0.5, "fisheye": 0.6,
+}
+SEVERITY_LEVELS = [(0,20,"Minor"),(21,40,"Low"),(41,60,"Moderate"),(61,80,"High"),(81,100,"Critical")]
+
+def compute_severity(defects: List[Dict[str, Any]], image_width: int, image_height: int) -> Tuple[float, str]:
+    if not defects:
+        return 0.0, "Minor"
+    image_area = image_width * image_height
+    total_area_px = sum(d.get("area_px", 0.0) for d in defects)
+    area_ratio = min(total_area_px / image_area, 1.0)
+    area_factor = area_ratio * 45.0
+    n = len(defects)
+    count_factor = min(n / 10.0, 1.0) * 25.0
+    avg_conf = sum(d.get("confidence", 0.5) for d in defects) / n
+    conf_factor = avg_conf * 15.0
+    max_penalty = max(CLASS_PENALTY.get(d.get("class_name", "scratch"), 0.5) for d in defects)
+    class_factor = max_penalty * 15.0
+    score = round(min(area_factor + count_factor + conf_factor + class_factor, 100.0), 2)
+    label = next((lbl for lo, hi, lbl in SEVERITY_LEVELS if lo <= score <= hi), "Critical")
+    return score, label
+""")
+
+# ── COST SERVICE ─────────────────────────────────────────────────────────────
+w("backend/app/services/cost_service.py", """from __future__ import annotations
+from typing import Dict, Tuple
+
+COST_RANGES: Dict[str, Tuple[float, float]] = {
+    "Minor": (500.0, 1500.0), "Low": (1500.0, 3000.0),
+    "Moderate": (3000.0, 6000.0), "High": (6000.0, 10000.0), "Critical": (10000.0, 18000.0),
+}
+TIME_REQUIRED = {"Minor":"2-4 hours","Low":"4-8 hours","Moderate":"1-2 days","High":"2-4 days","Critical":"5-7 days"}
+PRIORITY = {"Minor":"Low","Low":"Medium","Moderate":"Medium","High":"High","Critical":"Urgent"}
+RECOMMENDATIONS = {
+    "Minor": "Minor surface scratches detected. Light polishing and waxing recommended. A professional detailer can restore the finish within a few hours.",
+    "Low": "Low severity paint damage found. Touch-up paint and buffing recommended. Schedule a service appointment within the next 2-4 weeks.",
+    "Moderate": "Moderate paint damage detected. Panel repainting may be required. Consult an auto body shop for a detailed quote.",
+    "High": "High severity damage found. Multiple panels may require full repainting. Immediate inspection by a certified technician is strongly recommended.",
+    "Critical": "Critical paint and structural damage detected. Immediate professional repair required. Do not delay - further exposure may accelerate corrosion.",
+}
+SCORE_RANGES = {"Minor":(0,20),"Low":(21,40),"Moderate":(41,60),"High":(61,80),"Critical":(81,100)}
+
+def estimate_cost(severity_score: float, severity_label: str, defect_count: int) -> dict:
+    label = severity_label if severity_label in COST_RANGES else "Moderate"
+    cost_min, cost_max = COST_RANGES[label]
+    low, high = SCORE_RANGES.get(label, (41, 60))
+    ratio = (severity_score - low) / max(high - low, 1)
+    estimated = cost_min + ratio * (cost_max - cost_min)
+    estimated = min(estimated + defect_count * 150.0, cost_max * 1.1)
+    return {
+        "repair_cost_min": cost_min, "repair_cost_max": cost_max,
+        "repair_cost_estimated": round(estimated, 2),
+        "time_required": TIME_REQUIRED[label], "priority": PRIORITY[label],
+        "recommendation": RECOMMENDATIONS[label],
+    }
+""")
+
+# ── PREDICT SERVICE ──────────────────────────────────────────────────────────
+w("backend/app/services/predict_service.py", """from __future__ import annotations
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import cv2
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+CLASS_NAMES = ["scratch","paint_crack","paint_peel","dent","surface_damage","dirt_nib","orange_peel","paint_run","fisheye"]
+_model: Optional[Any] = None
+
+def _load_model() -> Any:
+    global _model
+    if _model is not None:
+        return _model
+    model_path = Path(settings.model_path)
+    if not model_path.exists():
+        logger.warning(f"Model not found at {model_path}. Using mock detector.")
+        return None
+    try:
+        from ultralytics import RTDETR
+        _model = RTDETR(str(model_path))
+        logger.info(f"RT-DETR v2 loaded from {model_path}")
+    except Exception as exc:
+        logger.error(f"Failed to load model: {exc}")
+        _model = None
+    return _model
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+def run_inference(image_path: str) -> List[Dict[str, Any]]:
+    model = _load_model()
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+    h, w = img.shape[:2]
+    if model is None:
+        logger.warning("Using MOCK detections - no model loaded.")
+        return [
+            {"class_id":0,"class_name":"scratch","confidence":0.87,"bbox":[int(w*0.2),int(h*0.3),int(w*0.5),int(h*0.45)],"image_width":w,"image_height":h},
+            {"class_id":0,"class_name":"scratch","confidence":0.72,"bbox":[int(w*0.6),int(h*0.55),int(w*0.85),int(h*0.75)],"image_width":w,"image_height":h},
+        ]
+    results = model.predict(source=image_path, conf=settings.model_confidence, iou=settings.model_iou_threshold, imgsz=settings.model_img_size, device="cuda" if _cuda_available() else "cpu", verbose=False)
+    detections = []
+    for result in results:
+        if result.boxes is None:
+            continue
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            detections.append({
+                "class_id": cls_id,
+                "class_name": CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else f"class_{cls_id}",
+                "confidence": round(float(box.conf[0]), 4),
+                "bbox": [round(v) for v in box.xyxy[0].tolist()],
+                "image_width": w, "image_height": h,
+            })
+    return detections
+""")
+
+# ── IMAGE UTILS ──────────────────────────────────────────────────────────────
+w("backend/app/utils/image_utils.py", """from __future__ import annotations
+import os
+from typing import Any, Dict, List
+import cv2
+import numpy as np
+
+COLOURS = [(0,0,255),(0,165,255),(0,255,255),(255,0,0),(128,0,128),(0,255,0),(255,0,255),(0,128,255),(128,128,0)]
+
+def draw_detections(image_path: str, detections: List[Dict[str, Any]], output_path: str) -> str:
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError(f"Cannot read image: {image_path}")
+    for i, det in enumerate(detections):
+        x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
+        cls_id = det.get("class_id", 0)
+        colour = COLOURS[cls_id % len(COLOURS)]
+        conf = det.get("confidence", 0.0)
+        label = det.get("class_name", "defect").replace("_", " ").title()
+        area_mm2 = det.get("area_mm2", 0.0)
+        cv2.rectangle(img, (x1, y1), (x2, y2), colour, 2)
+        text = f"#{i+1} {label} {conf:.0%} | {area_mm2:.1f}mm2"
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        ly = max(y1 - 8, th + 4)
+        cv2.rectangle(img, (x1, ly - th - 4), (x1 + tw + 4, ly + 2), colour, -1)
+        cv2.putText(img, text, (x1 + 2, ly - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 1, cv2.LINE_AA)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    cv2.imwrite(output_path, img)
+    return output_path
+""")
+
+# ── FILE UTILS ───────────────────────────────────────────────────────────────
+w("backend/app/utils/file_utils.py", """from __future__ import annotations
+import uuid
+from pathlib import Path
+
+def unique_filename(extension: str = ".jpg") -> str:
+    return f"{uuid.uuid4().hex}{extension}"
+
+def ensure_dir(path: str) -> Path:
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def url_path(storage_path: str) -> str:
+    return "/" + storage_path.replace("\\\\", "/").lstrip("/")
+""")
+
+# ── GLARE FILTER ─────────────────────────────────────────────────────────────
+w("backend/app/utils/glare_filter.py", """from __future__ import annotations
+from typing import Any, Dict, List
+import cv2
+import numpy as np
+
+def compute_glare_score(img_bgr: np.ndarray, bbox: List[float]) -> Dict[str, Any]:
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    roi = img_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return {"is_glare": False, "glare_score": 0.0}
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    bright_ratio = float((gray > 230).mean())
+    mean_s = float(hsv[:, :, 1].mean())
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    texture_score = float(thresh.std()) / 128.0
+    contours, _ = cv2.findContours((gray > 200).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    circularity = 0.0
+    if contours:
+        cnt = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(cnt)
+        perimeter = cv2.arcLength(cnt, True)
+        if perimeter > 0:
+            circularity = 4 * np.pi * area / (perimeter ** 2)
+    score = round(min(bright_ratio*0.35 + (1-min(mean_s/80.0,1.0))*0.25 + (1-min(texture_score,1.0))*0.20 + min(circularity,1.0)*0.20, 1.0), 4)
+    return {"is_glare": score > 0.60, "glare_score": score}
+
+def filter_glare_detections(img_bgr: np.ndarray, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    for det in detections:
+        result = compute_glare_score(img_bgr, det["bbox"])
+        det["is_glare"] = result["is_glare"]
+        det["glare_score"] = result["glare_score"]
+    return detections
+""")
+
+# ── MEASUREMENT ──────────────────────────────────────────────────────────────
+w("backend/app/utils/measurement.py", """from __future__ import annotations
+from typing import Any, Dict, List
+import numpy as np
+
+def bbox_to_measurements(bbox: List[float], scale_mm_per_px: float) -> Dict[str, float]:
+    x1, y1, x2, y2 = bbox
+    pw = abs(x2 - x1)
+    ph = abs(y2 - y1)
+    pa = pw * ph
+    return {
+        "area_px": round(pa, 2),
+        "length_mm": round(max(pw, ph) * scale_mm_per_px, 3),
+        "width_mm": round(min(pw, ph) * scale_mm_per_px, 3),
+        "area_mm2": round(pa * (scale_mm_per_px ** 2), 3),
+        "perimeter_mm": round(2*(pw+ph)*scale_mm_per_px, 3),
+        "centroid_x": round((x1+x2)/2, 1),
+        "centroid_y": round((y1+y2)/2, 1),
+    }
+
+def enrich_detections(detections: List[Dict[str, Any]], scale_mm_per_px: float) -> List[Dict[str, Any]]:
+    for i, det in enumerate(detections):
+        m = bbox_to_measurements(det["bbox"], scale_mm_per_px)
+        det.update(m)
+        det["defect_id"] = i
+    return detections
+""")
+
+# ── CALIBRATION ──────────────────────────────────────────────────────────────
+w("backend/app/utils/calibration.py", """from __future__ import annotations
+from app.config import settings
+
+def get_scale_factor(image_dpi: float = None, camera_distance_mm: float = None, focal_length_mm: float = None, sensor_width_mm: float = None, image_width_px: int = None) -> float:
+    if all(v is not None for v in [camera_distance_mm, focal_length_mm, sensor_width_mm, image_width_px]):
+        fov_mm = (sensor_width_mm * camera_distance_mm) / focal_length_mm
+        return round(fov_mm / image_width_px, 6)
+    if image_dpi and image_dpi > 0:
+        return round((1.0 / image_dpi) * 25.4, 6)
+    return settings.default_scale_factor
+""")
+
+# ── DEPENDENCIES ─────────────────────────────────────────────────────────────
+w("backend/app/utils/dependencies.py", """from __future__ import annotations
+import uuid
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.models.user import User
+from app.services.auth_service import decode_token
+
+security = HTTPBearer()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: AsyncSession = Depends(get_db)) -> User:
+    try:
+        payload = decode_token(credentials.credentials)
+        user_id: str = payload.get("sub", "")
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token.", headers={"WWW-Authenticate": "Bearer"})
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
+    return user
+""")
+
+# ── AUTH ROUTE ───────────────────────────────────────────────────────────────
+w("backend/app/routes/auth.py", """from __future__ import annotations
+import logging, uuid
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.models.user import User
+from app.schemas.user import Token, UserCreate, UserLogin, UserOut
+from app.services.auth_service import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
+from app.utils.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+@router.post("/register", response_model=UserOut, status_code=201)
+async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == payload.email))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Email already registered.")
+    user = User(name=payload.name, email=payload.email, hashed_password=hash_password(payload.password))
+    db.add(user)
+    await db.flush()
+    await db.refresh(user)
+    return user
+
+@router.post("/login", response_model=Token)
+async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == payload.email))
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.", headers={"WWW-Authenticate": "Bearer"})
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account disabled.")
+    token_data = {"sub": str(user.id)}
+    return Token(access_token=create_access_token(token_data), refresh_token=create_refresh_token(token_data), user=UserOut.model_validate(user))
+
+@router.get("/profile", response_model=UserOut)
+async def profile(current_user: User = Depends(get_current_user)):
+    return current_user
+
+@router.post("/refresh", response_model=Token)
+async def refresh_token(refresh_token: str, db: AsyncSession = Depends(get_db)):
+    try:
+        payload = decode_token(refresh_token)
+        if payload.get("type") != "refresh":
+            raise ValueError
+        user_id = payload.get("sub")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    token_data = {"sub": str(user.id)}
+    return Token(access_token=create_access_token(token_data), refresh_token=create_refresh_token(token_data), user=UserOut.model_validate(user))
+""")
+
+# ── PREDICT ROUTE ────────────────────────────────────────────────────────────
+w("backend/app/routes/predict.py", """from __future__ import annotations
+import logging, os, uuid
+from pathlib import Path
+import aiofiles, cv2
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.config import settings
+from app.database import get_db
+from app.models.inspection import Inspection
+from app.models.user import User
+from app.schemas.inspection import InspectionOut
+from app.services.cost_service import estimate_cost
+from app.services.predict_service import run_inference
+from app.services.severity_service import compute_severity
+from app.utils.calibration import get_scale_factor
+from app.utils.dependencies import get_current_user
+from app.utils.file_utils import ensure_dir
+from app.utils.glare_filter import filter_glare_detections
+from app.utils.image_utils import draw_detections
+from app.utils.measurement import enrich_detections
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/predict", tags=["Prediction"])
+ALLOWED = {".jpg",".jpeg",".png",".webp",".bmp"}
+
+@router.post("", response_model=InspectionOut, status_code=201)
+async def predict(
+    vehicle_number: str = Form(...), vehicle_model: str = Form(""),
+    owner_name: str = Form(""), inspector_name: str = Form(""),
+    image: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    suffix = Path(image.filename or "image.jpg").suffix.lower()
+    if suffix not in ALLOWED:
+        raise HTTPException(400, f"Unsupported file type: {suffix}")
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    file_id = uuid.uuid4().hex
+    upload_dir = ensure_dir(settings.upload_dir)
+    orig_path = str(upload_dir / f"{file_id}_original{suffix}")
+    async with aiofiles.open(orig_path, "wb") as f:
+        total = 0
+        while chunk := await image.read(8192):
+            total += len(chunk)
+            if total > max_bytes:
+                os.remove(orig_path)
+                raise HTTPException(413, "File too large.")
+            await f.write(chunk)
+    try:
+        detections = run_inference(orig_path)
+    except Exception as exc:
+        logger.error(f"Inference failed: {exc}", exc_info=True)
+        raise HTTPException(500, "Model inference failed.")
+    img_bgr = cv2.imread(orig_path)
+    img_h, img_w = img_bgr.shape[:2]
+    detections = filter_glare_detections(img_bgr, detections)
+    scale = get_scale_factor()
+    detections = enrich_detections(detections, scale)
+    real_dets = [d for d in detections if not d.get("is_glare", False)]
+    severity_score, severity_label = compute_severity(real_dets, img_w, img_h)
+    cost_info = estimate_cost(severity_score, severity_label, len(real_dets))
+    result_dir = ensure_dir(settings.result_dir)
+    result_path = str(result_dir / f"{file_id}_result{suffix}")
+    draw_detections(orig_path, real_dets, result_path)
+    avg_conf = sum(d["confidence"] for d in real_dets) / len(real_dets) if real_dets else 0.0
+    total_area = sum(d.get("area_mm2", 0.0) for d in real_dets)
+    inspection = Inspection(
+        user_id=current_user.id, vehicle_number=vehicle_number,
+        vehicle_model=vehicle_model or None, owner_name=owner_name or None,
+        inspector_name=inspector_name or None, image_path=orig_path, result_path=result_path,
+        defects=[{k: v for k, v in d.items()} for d in real_dets],
+        severity_score=severity_score, severity_label=severity_label,
+        confidence=round(avg_conf, 4), total_area_mm2=round(total_area, 3),
+        defect_count=len(real_dets), **cost_info,
+    )
+    db.add(inspection)
+    await db.flush()
+    await db.refresh(inspection)
+    out = InspectionOut.model_validate(inspection)
+    out.has_report = False
+    return out
+""")
+
+# ── INSPECTIONS ROUTE ────────────────────────────────────────────────────────
+w("backend/app/routes/inspections.py", """from __future__ import annotations
+import csv, io, logging, os, uuid
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from sqlalchemy import desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.models.inspection import Inspection
+from app.models.report import Report
+from app.models.user import User
+from app.schemas.inspection import InspectionListOut, InspectionOut
+from app.utils.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/inspections", tags=["Inspections"])
+
+@router.get("", response_model=InspectionListOut)
+async def list_inspections(
+    page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None), severity: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    stmt = select(Inspection).where(Inspection.user_id == current_user.id).order_by(desc(Inspection.created_at))
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(or_(Inspection.vehicle_number.ilike(pattern), Inspection.owner_name.ilike(pattern), Inspection.vehicle_model.ilike(pattern)))
+    if severity:
+        stmt = stmt.where(Inspection.severity_label == severity)
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    stmt = stmt.offset((page - 1) * limit).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+    items = []
+    for row in rows:
+        rep = (await db.execute(select(Report).where(Report.inspection_id == row.id))).scalar_one_or_none()
+        out = InspectionOut.model_validate(row)
+        out.has_report = rep is not None
+        items.append(out)
+    return InspectionListOut(total=total, page=page, limit=limit, items=items)
+
+@router.get("/{inspection_id}", response_model=InspectionOut)
+async def get_inspection(inspection_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id, Inspection.user_id == current_user.id))
+    insp = result.scalar_one_or_none()
+    if not insp:
+        raise HTTPException(404, "Inspection not found.")
+    rep = (await db.execute(select(Report).where(Report.inspection_id == insp.id))).scalar_one_or_none()
+    out = InspectionOut.model_validate(insp)
+    out.has_report = rep is not None
+    return out
+
+@router.delete("/{inspection_id}", status_code=204)
+async def delete_inspection(inspection_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id, Inspection.user_id == current_user.id))
+    insp = result.scalar_one_or_none()
+    if not insp:
+        raise HTTPException(404, "Inspection not found.")
+    for path in [insp.image_path, insp.result_path, insp.mask_path]:
+        if path and os.path.exists(path):
+            try: os.remove(path)
+            except OSError: pass
+    await db.delete(insp)
+
+@router.get("/{inspection_id}/csv")
+async def export_csv(inspection_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id, Inspection.user_id == current_user.id))
+    insp = result.scalar_one_or_none()
+    if not insp:
+        raise HTTPException(404, "Inspection not found.")
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID","Vehicle Number","Vehicle Model","Owner","Inspector","Severity Score","Severity Label","Defect Count","Total Area mm2","Confidence","Repair Cost INR","Time Required","Priority","Created At"])
+    writer.writerow([str(insp.id),insp.vehicle_number,insp.vehicle_model,insp.owner_name,insp.inspector_name,insp.severity_score,insp.severity_label,insp.defect_count,insp.total_area_mm2,insp.confidence,insp.repair_cost_estimated,insp.time_required,insp.priority,insp.created_at.isoformat()])
+    output.seek(0)
+    return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=inspection_{inspection_id}.csv"})
+""")
+
+# ── REPORTS ROUTE ────────────────────────────────────────────────────────────
+w("backend/app/routes/reports.py", """from __future__ import annotations
+import logging, os, uuid
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.models.inspection import Inspection
+from app.models.report import Report
+from app.models.user import User
+from app.reports.pdf_generator import generate_pdf
+from app.schemas.report import ReportOut
+from app.utils.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/reports", tags=["Reports"])
+
+@router.post("/{inspection_id}/generate", response_model=ReportOut)
+async def generate_report(inspection_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id, Inspection.user_id == current_user.id))
+    insp = result.scalar_one_or_none()
+    if not insp:
+        raise HTTPException(404, "Inspection not found.")
+    existing = (await db.execute(select(Report).where(Report.inspection_id == insp.id))).scalar_one_or_none()
+    if existing:
+        return existing
+    try:
+        pdf_path = generate_pdf(insp, current_user)
+    except Exception as exc:
+        logger.error(f"PDF generation failed: {exc}", exc_info=True)
+        raise HTTPException(500, "PDF generation failed.")
+    report = Report(inspection_id=insp.id, pdf_path=pdf_path)
+    db.add(report)
+    await db.flush()
+    await db.refresh(report)
+    return report
+
+@router.get("/{inspection_id}", response_class=FileResponse)
+async def download_report(inspection_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id, Inspection.user_id == current_user.id))
+    insp = result.scalar_one_or_none()
+    if not insp:
+        raise HTTPException(404, "Inspection not found.")
+    rep_res = (await db.execute(select(Report).where(Report.inspection_id == insp.id))).scalar_one_or_none()
+    if not rep_res:
+        raise HTTPException(404, "Report not yet generated. Call POST /reports/{id}/generate first.")
+    if not os.path.exists(rep_res.pdf_path):
+        raise HTTPException(410, "PDF file missing from storage.")
+    return FileResponse(path=rep_res.pdf_path, media_type="application/pdf", filename=f"CAPVIA_Inspection_{inspection_id}.pdf")
+""")
+
+# ── DASHBOARD ROUTE ──────────────────────────────────────────────────────────
+w("backend/app/routes/dashboard.py", """from __future__ import annotations
+import logging
+from collections import defaultdict
+from datetime import datetime
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
+from app.models.inspection import Inspection
+from app.models.user import User
+from app.schemas.dashboard import DashboardOut, MonthlyCount, SeverityCount
+from app.schemas.inspection import InspectionOut
+from app.utils.dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+@router.get("", response_model=DashboardOut)
+async def dashboard(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(Inspection).where(Inspection.user_id == current_user.id))
+    all_insp = result.scalars().all()
+    total = len(all_insp)
+    critical = sum(1 for i in all_insp if i.severity_label == "Critical")
+    avg_sev = sum(i.severity_score or 0 for i in all_insp) / total if total else 0.0
+    avg_cost = sum(i.repair_cost_estimated or 0 for i in all_insp) / total if total else 0.0
+    monthly: dict = defaultdict(lambda: {"count":0,"total_cost":0.0})
+    for insp in all_insp:
+        key = insp.created_at.strftime("%b %Y")
+        monthly[key]["count"] += 1
+        monthly[key]["total_cost"] += insp.repair_cost_estimated or 0.0
+    monthly_data = [MonthlyCount(month=k, count=v["count"], avg_cost=round(v["total_cost"]/v["count"],2) if v["count"] else 0.0) for k, v in sorted(monthly.items(), key=lambda x: datetime.strptime(x[0], "%b %Y"))][-12:]
+    sev_counts: dict = defaultdict(int)
+    for insp in all_insp:
+        if insp.severity_label:
+            sev_counts[insp.severity_label] += 1
+    severity_dist = [SeverityCount(label=lbl, count=cnt, percentage=round(cnt/total*100,1) if total else 0.0) for lbl, cnt in sev_counts.items()]
+    recent = sorted(all_insp, key=lambda x: x.created_at, reverse=True)[:5]
+    return DashboardOut(total_inspections=total, critical_defects=critical, avg_severity=round(avg_sev,2), avg_repair_cost=round(avg_cost,2), monthly_inspections=monthly_data, severity_distribution=severity_dist, recent_inspections=[InspectionOut.model_validate(i).model_dump() for i in recent])
+""")
+
+print("PHASE 2 COMPLETE: services, utils, routes written")

@@ -1,0 +1,782 @@
+"""CAPVIA AI - Phase 3: PDF Generator, Main App, Requirements, Docker, Tests"""
+import os
+
+ROOT = r"C:\Users\Jawad Shaikh\OneDrive\Downloads\Paint_defect (1)\Paint_defect"
+
+def w(rel, content):
+    full = os.path.join(ROOT, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    print("  OK:", rel)
+
+# ── PDF GENERATOR ────────────────────────────────────────────────────────────
+w("backend/app/reports/pdf_generator.py", """from __future__ import annotations
+import io, os, uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+import qrcode
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from app.config import settings
+
+PAGE_WIDTH, PAGE_HEIGHT = A4
+MARGIN = 18 * mm
+PRIMARY = colors.HexColor("#2563EB")
+DARK = colors.HexColor("#0F172A")
+LIGHT_GRAY = colors.HexColor("#F1F5F9")
+SEV_COLORS = {"Minor":colors.HexColor("#22C55E"),"Low":colors.HexColor("#84CC16"),"Moderate":colors.HexColor("#F59E0B"),"High":colors.HexColor("#F97316"),"Critical":colors.HexColor("#EF4444")}
+
+def _st():
+    return {
+        "SectionHead": ParagraphStyle("SH", fontName="Helvetica-Bold", fontSize=12, textColor=PRIMARY, spaceBefore=8, spaceAfter=4),
+        "Body": ParagraphStyle("B", fontName="Helvetica", fontSize=9, textColor=DARK),
+        "Small": ParagraphStyle("S", fontName="Helvetica", fontSize=7, textColor=colors.grey),
+    }
+
+def _qr_image(data: str) -> io.BytesIO:
+    qr = qrcode.QRCode(version=1, box_size=4, border=2)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+def generate_pdf(inspection: Any, user: Any) -> str:
+    report_dir = Path(settings.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = str(report_dir / f"CAPVIA_{inspection.id}.pdf")
+    doc = SimpleDocTemplate(pdf_path, pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=MARGIN, bottomMargin=MARGIN, title=f"CAPVIA AI - Inspection Report #{inspection.id}", author="CAPVIA AI Platform")
+    st = _st()
+    story = []
+
+    # Header
+    hd = [[
+        Paragraph("<b>CAPVIA AI</b>", ParagraphStyle("H", fontName="Helvetica-Bold", fontSize=20, textColor=colors.white)),
+        Paragraph(f"INSPECTION REPORT<br/><font size=8>ID: {inspection.id}</font>", ParagraphStyle("HR", fontName="Helvetica", fontSize=11, textColor=colors.white, alignment=TA_RIGHT)),
+    ]]
+    ht = Table(hd, colWidths=[PAGE_WIDTH*0.5-MARGIN, PAGE_WIDTH*0.5-MARGIN])
+    ht.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),PRIMARY),("PADDING",(0,0),(-1,-1),12),("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
+    story.append(ht)
+    story.append(Spacer(1, 8*mm))
+
+    # Details
+    story.append(Paragraph("Vehicle & Inspection Details", st["SectionHead"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=PRIMARY))
+    story.append(Spacer(1, 3*mm))
+    date_str = inspection.created_at.strftime("%d %B %Y, %I:%M %p")
+    details = [["Owner Name", inspection.owner_name or "N/A", "Date", date_str],["Vehicle Number", inspection.vehicle_number, "Model", inspection.vehicle_model or "N/A"],["Inspector", inspection.inspector_name or "N/A", "Severity", inspection.severity_label or "N/A"]]
+    dt = Table(details, colWidths=[40*mm,55*mm,40*mm,55*mm])
+    dt.setStyle(TableStyle([("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"),("FONTNAME",(2,0),(2,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9),("ROWBACKGROUNDS",(0,0),(-1,-1),[LIGHT_GRAY,colors.white]),("GRID",(0,0),(-1,-1),0.5,colors.lightgrey),("PADDING",(0,0),(-1,-1),6)]))
+    story.append(dt)
+    story.append(Spacer(1, 6*mm))
+
+    # Images
+    story.append(Paragraph("Inspection Images", st["SectionHead"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=PRIMARY))
+    story.append(Spacer(1, 3*mm))
+    iw = (PAGE_WIDTH - 2*MARGIN - 10*mm) / 2
+    ih = iw * 0.65
+    img_row = []
+    for label, path in [("Original Image", inspection.image_path), ("AI Annotated Image", inspection.result_path)]:
+        cell = [Paragraph(f"<b>{label}</b>", ParagraphStyle("IL", fontName="Helvetica-Bold", fontSize=9, alignment=TA_CENTER))]
+        if path and os.path.exists(path):
+            cell.append(Image(path, width=iw, height=ih))
+        else:
+            cell.append(Paragraph("[Image not available]", ParagraphStyle("NA", fontName="Helvetica", fontSize=8, textColor=colors.grey, alignment=TA_CENTER)))
+        img_row.append(cell)
+    it = Table([img_row], colWidths=[iw+2*mm, iw+2*mm])
+    it.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("PADDING",(0,0),(-1,-1),4)]))
+    story.append(it)
+    story.append(Spacer(1, 6*mm))
+
+    # Findings
+    story.append(Paragraph("AI Defect Findings", st["SectionHead"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=PRIMARY))
+    story.append(Spacer(1, 3*mm))
+    defects = inspection.defects or []
+    if defects:
+        fd = [["#","Defect Type","Confidence","Area (mm2)","Length","Width","Glare?"]]
+        for i, d in enumerate(defects, 1):
+            fd.append([str(i),d.get("class_name","N/A").replace("_"," ").title(),f"{d.get('confidence',0):.1%}",f"{d.get('area_mm2',0):.2f}",f"{d.get('length_mm',0):.2f} mm",f"{d.get('width_mm',0):.2f} mm","Yes" if d.get("is_glare") else "No"])
+        ft = Table(fd, colWidths=[8*mm,38*mm,24*mm,24*mm,22*mm,22*mm,16*mm])
+        ft.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),PRIMARY),("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),8),("ROWBACKGROUNDS",(0,1),(-1,-1),[LIGHT_GRAY,colors.white]),("GRID",(0,0),(-1,-1),0.4,colors.lightgrey),("PADDING",(0,0),(-1,-1),5)]))
+        story.append(ft)
+    else:
+        story.append(Paragraph("No defects detected. Vehicle surface PASS.", st["Body"]))
+    story.append(Spacer(1, 6*mm))
+
+    # Severity + Cost
+    story.append(Paragraph("Severity Assessment & Repair Cost", st["SectionHead"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=PRIMARY))
+    story.append(Spacer(1, 3*mm))
+    sev_color = SEV_COLORS.get(inspection.severity_label or "Minor", PRIMARY)
+    score = inspection.severity_score or 0.0
+    sd = [[
+        Paragraph(f'<font color="white"><b>SEVERITY: {inspection.severity_label or "N/A"}</b><br/>Score: {score:.1f}/100<br/>Defects: {inspection.defect_count or 0} | Total Area: {inspection.total_area_mm2 or 0:.2f} mm2</font>', ParagraphStyle("SC", fontName="Helvetica-Bold", fontSize=11, textColor=colors.white)),
+        Paragraph(f'<font color="white"><b>Rs. {inspection.repair_cost_estimated or 0:,.0f}</b><br/><font size=8>Range: Rs.{inspection.repair_cost_min or 0:,.0f} - Rs.{inspection.repair_cost_max or 0:,.0f}<br/>Time: {inspection.time_required or "N/A"} | Priority: {inspection.priority or "N/A"}</font></font>', ParagraphStyle("CC", fontName="Helvetica-Bold", fontSize=11, textColor=colors.white, alignment=TA_RIGHT)),
+    ]]
+    svt = Table(sd, colWidths=[(PAGE_WIDTH-2*MARGIN)/2, (PAGE_WIDTH-2*MARGIN)/2])
+    svt.setStyle(TableStyle([("BACKGROUND",(0,0),(0,0),sev_color),("BACKGROUND",(1,0),(1,0),PRIMARY),("PADDING",(0,0),(-1,-1),12),("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
+    story.append(svt)
+    story.append(Spacer(1, 6*mm))
+
+    # Recommendation
+    story.append(Paragraph("Recommendation", st["SectionHead"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=PRIMARY))
+    story.append(Spacer(1, 2*mm))
+    story.append(Paragraph(inspection.recommendation or "No recommendation.", st["Body"]))
+    story.append(Spacer(1, 8*mm))
+
+    # QR + Footer
+    qr_buf = _qr_image(f"CAPVIA-INSPECTION:{inspection.id}")
+    fd2 = [[
+        Image(qr_buf, width=22*mm, height=22*mm),
+        Paragraph(f"Scan to verify | ID: {inspection.id}<br/>Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}<br/><font size=6>This report was generated by CAPVIA AI.</font>", ParagraphStyle("F", fontName="Helvetica", fontSize=8, textColor=colors.grey)),
+    ]]
+    fdt = Table(fd2, colWidths=[28*mm, PAGE_WIDTH-2*MARGIN-28*mm])
+    fdt.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"MIDDLE"),("PADDING",(0,0),(-1,-1),4),("LINEABOVE",(0,0),(-1,0),0.5,colors.lightgrey)]))
+    story.append(fdt)
+    doc.build(story)
+    return pdf_path
+""")
+
+# ── MAIN APP ─────────────────────────────────────────────────────────────────
+w("backend/app/main.py", """from __future__ import annotations
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from app.config import settings
+from app.database import create_tables
+from app.routes import auth, dashboard, inspections, predict, reports
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting CAPVIA AI backend...")
+    settings.ensure_directories()
+    await create_tables()
+    logger.info("Database tables ready.")
+    yield
+    logger.info("Shutting down CAPVIA AI backend...")
+
+app = FastAPI(title="CAPVIA AI", description="Automated Vehicle Paint Defect Detection & Assessment Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/api/openapi.json", lifespan=lifespan)
+
+app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+for d in [settings.upload_dir, settings.result_dir, settings.report_dir, settings.mask_dir]:
+    Path(d).mkdir(parents=True, exist_ok=True)
+
+app.mount("/storage", StaticFiles(directory="storage"), name="storage")
+
+PREFIX = "/api"
+app.include_router(auth.router, prefix=PREFIX)
+app.include_router(predict.router, prefix=PREFIX)
+app.include_router(inspections.router, prefix=PREFIX)
+app.include_router(reports.router, prefix=PREFIX)
+app.include_router(dashboard.router, prefix=PREFIX)
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "version": "1.0.0"}
+""")
+
+# ── REQUIREMENTS ─────────────────────────────────────────────────────────────
+w("backend/requirements.txt", """fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy[asyncio]==2.0.35
+alembic==1.13.3
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+pydantic==2.9.2
+pydantic-settings==2.5.2
+pydantic[email]
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.12
+aiofiles==24.1.0
+pillow==10.4.0
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+torch==2.4.1
+torchvision==0.19.1
+ultralytics==8.3.0
+albumentations==1.4.18
+reportlab==4.2.2
+qrcode[pil]==7.4.2
+httpx==0.27.2
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-cov==5.0.0
+python-dotenv==1.0.1
+aiosqlite==0.20.0
+""")
+
+# ── BACKEND DOCKERFILE ───────────────────────────────────────────────────────
+w("backend/Dockerfile", """FROM python:3.12-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 gcc && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN mkdir -p storage/uploads storage/results storage/reports storage/masks
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+""")
+
+# ── NGINX ────────────────────────────────────────────────────────────────────
+w("nginx/nginx.conf", """events { worker_connections 1024; }
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    client_max_body_size 25M;
+    sendfile on;
+    upstream backend { server backend:8000; }
+    server {
+        listen 80;
+        server_name _;
+        location / { root /usr/share/nginx/html; index index.html; try_files $uri $uri/ /index.html; }
+        location /api/ { proxy_pass http://backend; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 300s; }
+        location /storage/ { proxy_pass http://backend/storage/; }
+        gzip on;
+        gzip_types text/plain application/json application/javascript text/css;
+    }
+}
+""")
+
+# ── DOCKER COMPOSE ───────────────────────────────────────────────────────────
+w("docker-compose.yml", """version: "3.9"
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: capvia_ai
+      POSTGRES_USER: capvia
+      POSTGRES_PASSWORD: capvia_secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U capvia -d capvia_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [capvia_net]
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://capvia:capvia_secure_password@postgres:5432/capvia_ai
+    volumes:
+      - ./storage:/app/storage
+      - ./ai_model/weights:/app/ai_model/weights
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [capvia_net]
+    ports: ["8000:8000"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks: [capvia_net]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports: ["80:80"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - frontend_build:/usr/share/nginx/html:ro
+    depends_on: [frontend, backend]
+    networks: [capvia_net]
+
+volumes:
+  postgres_data:
+  frontend_build:
+
+networks:
+  capvia_net:
+    driver: bridge
+""")
+
+# ── .ENV EXAMPLE ─────────────────────────────────────────────────────────────
+w(".env.example", """# CAPVIA AI Environment Variables
+APP_NAME=CAPVIA AI
+APP_ENV=development
+DEBUG=true
+JWT_SECRET=your-super-secret-jwt-key-minimum-32-chars-here
+JWT_ALGORITHM=HS256
+JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=capvia_ai
+POSTGRES_USER=capvia
+POSTGRES_PASSWORD=capvia_secure_password
+DATABASE_URL=postgresql+asyncpg://capvia:capvia_secure_password@postgres:5432/capvia_ai
+MODEL_PATH=ai_model/weights/best_rtdetr.pt
+MODEL_CONFIDENCE=0.25
+MODEL_IOU_THRESHOLD=0.45
+MODEL_IMG_SIZE=1024
+USE_SAM=false
+UPLOAD_DIR=storage/uploads
+RESULT_DIR=storage/results
+REPORT_DIR=storage/reports
+MASK_DIR=storage/masks
+MAX_UPLOAD_SIZE_MB=20
+DEFAULT_SCALE_FACTOR=0.05
+DEFAULT_IMAGE_DPI=96
+CORS_ORIGINS=["http://localhost:3000","http://localhost"]
+ONNX_MODEL_PATH=ai_model/weights/best.onnx
+USE_ONNX=false
+""")
+
+# ── TESTS ────────────────────────────────────────────────────────────────────
+w("tests/conftest.py", """from __future__ import annotations
+import asyncio, os, uuid
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
+
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_capvia.db")
+os.environ.setdefault("JWT_SECRET", "test-secret-key-at-least-32-characters-long")
+os.environ.setdefault("UPLOAD_DIR", "storage/test_uploads")
+os.environ.setdefault("RESULT_DIR", "storage/test_results")
+os.environ.setdefault("REPORT_DIR", "storage/test_reports")
+os.environ.setdefault("MASK_DIR", "storage/test_masks")
+os.environ.setdefault("MODEL_PATH", "nonexistent/model.pt")
+
+@pytest.fixture(scope="session")
+def event_loop():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+@pytest_asyncio.fixture(scope="session")
+async def test_app():
+    import sys
+    sys.path.insert(0, "backend")
+    from app.database import Base, engine
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    from app.main import app
+    yield app
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+@pytest_asyncio.fixture(scope="session")
+async def async_client(test_app):
+    async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+        yield client
+
+@pytest_asyncio.fixture
+async def auth_headers(async_client):
+    email = f"test_{uuid.uuid4().hex[:6]}@capvia.ai"
+    await async_client.post("/api/auth/register", json={"name":"Test User","email":email,"password":"TestPass123!"})
+    resp = await async_client.post("/api/auth/login", json={"email":email,"password":"TestPass123!"})
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+""")
+
+w("tests/test_auth.py", """from __future__ import annotations
+import uuid
+import pytest
+from httpx import AsyncClient
+
+@pytest.mark.asyncio
+async def test_register_success(async_client: AsyncClient):
+    email = f"reg_{uuid.uuid4().hex[:6]}@capvia.ai"
+    resp = await async_client.post("/api/auth/register", json={"name":"Jane Doe","email":email,"password":"SecurePass123!"})
+    assert resp.status_code == 201
+    assert resp.json()["email"] == email
+
+@pytest.mark.asyncio
+async def test_register_duplicate(async_client: AsyncClient):
+    email = f"dup_{uuid.uuid4().hex[:6]}@capvia.ai"
+    p = {"name":"Dup","email":email,"password":"SecurePass123!"}
+    await async_client.post("/api/auth/register", json=p)
+    resp = await async_client.post("/api/auth/register", json=p)
+    assert resp.status_code == 400
+
+@pytest.mark.asyncio
+async def test_login_success(async_client: AsyncClient):
+    email = f"login_{uuid.uuid4().hex[:6]}@capvia.ai"
+    await async_client.post("/api/auth/register", json={"name":"Login User","email":email,"password":"LoginPass123!"})
+    resp = await async_client.post("/api/auth/login", json={"email":email,"password":"LoginPass123!"})
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()
+
+@pytest.mark.asyncio
+async def test_login_wrong_password(async_client: AsyncClient):
+    email = f"badpass_{uuid.uuid4().hex[:6]}@capvia.ai"
+    await async_client.post("/api/auth/register", json={"name":"X","email":email,"password":"CorrectPass1!"})
+    resp = await async_client.post("/api/auth/login", json={"email":email,"password":"WrongPass1!"})
+    assert resp.status_code == 401
+
+@pytest.mark.asyncio
+async def test_profile_with_auth(async_client: AsyncClient, auth_headers):
+    resp = await async_client.get("/api/auth/profile", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "email" in resp.json()
+""")
+
+w("tests/test_severity.py", """from __future__ import annotations
+import sys; sys.path.insert(0, "backend")
+from app.services.severity_service import compute_severity
+
+def _det(cls="scratch", conf=0.85, area_px=10000):
+    return {"class_name": cls, "confidence": conf, "area_px": area_px}
+
+def test_no_defects():
+    score, label = compute_severity([], 1920, 1080)
+    assert score == 0.0 and label == "Minor"
+
+def test_single_minor():
+    _, label = compute_severity([_det(area_px=500)], 640, 640)
+    assert label in ("Minor", "Low")
+
+def test_many_critical():
+    dets = [_det("dent", 0.99, 40000) for _ in range(15)]
+    score, label = compute_severity(dets, 640, 640)
+    assert score > 60
+
+def test_score_clamped():
+    dets = [_det("paint_crack", 1.0, 999999) for _ in range(50)]
+    score, _ = compute_severity(dets, 640, 640)
+    assert 0 <= score <= 100
+""")
+
+w("tests/test_measurement.py", """from __future__ import annotations
+import sys; sys.path.insert(0, "backend")
+import pytest
+from app.utils.measurement import bbox_to_measurements, enrich_detections
+
+def test_bbox_area():
+    m = bbox_to_measurements([100,100,200,150], 0.05)
+    assert abs(m["area_mm2"] - 12.5) < 0.01
+
+def test_bbox_length_width():
+    m = bbox_to_measurements([0,0,200,100], 0.1)
+    assert m["length_mm"] == pytest.approx(20.0)
+    assert m["width_mm"] == pytest.approx(10.0)
+
+def test_enrich_detections():
+    dets = [{"bbox":[10,10,60,40],"class_id":0,"class_name":"scratch","confidence":0.9}]
+    enriched = enrich_detections(dets, 0.05)
+    assert "area_mm2" in enriched[0]
+
+def test_zero_area():
+    m = bbox_to_measurements([50,50,50,50], 0.05)
+    assert m["area_mm2"] == 0.0
+""")
+
+w("tests/test_glare.py", """from __future__ import annotations
+import sys; sys.path.insert(0, "backend")
+import numpy as np
+from app.utils.glare_filter import compute_glare_score
+
+def test_bright_white_region_is_glare():
+    img = np.ones((200,200,3), dtype=np.uint8) * 255
+    result = compute_glare_score(img, [0,0,200,200])
+    assert result["is_glare"] is True
+
+def test_dark_textured_not_glare():
+    np.random.seed(42)
+    img = np.random.randint(30, 80, (200,200,3), dtype=np.uint8)
+    result = compute_glare_score(img, [0,0,200,200])
+    assert result["is_glare"] is False
+
+def test_empty_roi():
+    img = np.zeros((100,100,3), dtype=np.uint8)
+    result = compute_glare_score(img, [50,50,50,50])
+    assert result["is_glare"] is False and result["glare_score"] == 0.0
+""")
+
+w("tests/test_api.py", """from __future__ import annotations
+import io, sys
+sys.path.insert(0, "backend")
+import numpy as np
+import pytest
+import cv2
+from httpx import AsyncClient
+
+def _fake_image_bytes() -> bytes:
+    img = np.zeros((480,640,3), dtype=np.uint8)
+    img[:] = (60,60,60)
+    cv2.line(img, (100,200), (400,220), (200,200,200), 2)
+    ok, buf = cv2.imencode(".jpg", img)
+    return buf.tobytes()
+
+@pytest.mark.asyncio
+async def test_health(async_client: AsyncClient):
+    resp = await async_client.get("/api/health")
+    assert resp.status_code == 200 and resp.json()["status"] == "ok"
+
+@pytest.mark.asyncio
+async def test_predict_requires_auth(async_client: AsyncClient):
+    resp = await async_client.post("/api/predict", data={"vehicle_number":"MH01AB1234"})
+    assert resp.status_code == 403
+
+@pytest.mark.asyncio
+async def test_predict_success(async_client: AsyncClient, auth_headers):
+    img_bytes = _fake_image_bytes()
+    resp = await async_client.post("/api/predict", headers=auth_headers,
+        data={"vehicle_number":"MH01AB1234","vehicle_model":"Swift","owner_name":"Test Owner"},
+        files={"image": ("test_car.jpg", io.BytesIO(img_bytes), "image/jpeg")})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "id" in data and "severity_label" in data
+
+@pytest.mark.asyncio
+async def test_list_inspections(async_client: AsyncClient, auth_headers):
+    resp = await async_client.get("/api/inspections", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "items" in resp.json()
+
+@pytest.mark.asyncio
+async def test_dashboard(async_client: AsyncClient, auth_headers):
+    resp = await async_client.get("/api/dashboard", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "total_inspections" in resp.json()
+""")
+
+# ── AI MODEL FILES ───────────────────────────────────────────────────────────
+w("ai_model/dataset.yaml", """# CAPVIA AI - RT-DETR v2 Dataset Configuration
+path: ../car-scratches-1
+train: train/images
+val:   valid/images
+test:  test/images
+nc: 1
+names:
+  0: scratch
+  # Future classes (add annotations to unlock):
+  # 1: paint_crack
+  # 2: paint_peel
+  # 3: dent
+  # 4: surface_damage
+  # 5: dirt_nib
+  # 6: orange_peel
+  # 7: paint_run
+  # 8: fisheye
+""")
+
+w("ai_model/train_rtdetr.py", """\"\"\"
+CAPVIA AI - RT-DETR v2 Large Training Script
+Usage: python ai_model/train_rtdetr.py
+Outputs: ai_model/weights/best_rtdetr.pt, ai_model/weights/last.pt, ai_model/weights/best.onnx
+\"\"\"
+from __future__ import annotations
+import argparse, json, logging, os, sys
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("capvia.train")
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Train RT-DETR v2 for paint defect detection")
+    p.add_argument("--data",     default="ai_model/dataset.yaml")
+    p.add_argument("--epochs",   type=int,   default=150)
+    p.add_argument("--imgsz",    type=int,   default=1024)
+    p.add_argument("--batch",    type=int,   default=-1)
+    p.add_argument("--lr0",      type=float, default=1e-4)
+    p.add_argument("--device",   default="0")
+    p.add_argument("--resume",   action="store_true")
+    p.add_argument("--patience", type=int,   default=20)
+    p.add_argument("--workers",  type=int,   default=8)
+    p.add_argument("--name",     default="capvia_rtdetr")
+    return p.parse_args()
+
+def train(args):
+    try:
+        from ultralytics import RTDETR
+    except ImportError:
+        logger.error("Ultralytics not installed. Run: pip install ultralytics>=8.3.0")
+        sys.exit(1)
+    weights_dir = Path("ai_model/weights")
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    training_dir = Path("ai_model/training")
+    training_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume and (weights_dir / "last.pt").exists():
+        model_weights = str(weights_dir / "last.pt")
+        logger.info(f"Resuming from {model_weights}")
+    else:
+        model_weights = "rtdetr-l.pt"
+        logger.info(f"Starting fresh with {model_weights}")
+    model = RTDETR(model_weights)
+    logger.info("=" * 60)
+    logger.info("CAPVIA AI - RT-DETR v2 Large Training")
+    logger.info(f"Dataset: {args.data} | Epochs: {args.epochs} | ImgSz: {args.imgsz} | LR: {args.lr0}")
+    logger.info(f"Device: {args.device} | AMP: True | Early-stop: {args.patience} epochs")
+    logger.info("=" * 60)
+    results = model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, optimizer="AdamW", lr0=args.lr0, lrf=0.01, cos_lr=True, weight_decay=1e-4, warmup_epochs=3, device=args.device, workers=args.workers, patience=args.patience, save_period=5, amp=True, name=args.name, project="runs/rtdetr", exist_ok=True, verbose=True, flipud=0.3, fliplr=0.5, degrees=15.0, translate=0.1, scale=0.5, hsv_h=0.015, hsv_s=0.7, hsv_v=0.4, mosaic=0.8, mixup=0.1)
+    run_dir = Path(f"runs/rtdetr/{args.name}")
+    best_src = run_dir / "weights" / "best.pt"
+    last_src = run_dir / "weights" / "last.pt"
+    if best_src.exists():
+        import shutil
+        shutil.copy(best_src, weights_dir / "best_rtdetr.pt")
+        shutil.copy(last_src, weights_dir / "last.pt")
+        logger.info(f"Best weights saved to {weights_dir / 'best_rtdetr.pt'}")
+    metrics = {"best_map50": float(results.results_dict.get("metrics/mAP50(B)", 0.0)), "best_map5095": float(results.results_dict.get("metrics/mAP50-95(B)", 0.0)), "best_precision": float(results.results_dict.get("metrics/precision(B)", 0.0)), "best_recall": float(results.results_dict.get("metrics/recall(B)", 0.0)), "epochs_trained": args.epochs, "model": "rtdetr-l", "imgsz": args.imgsz}
+    (training_dir / "training_metrics.json").write_text(json.dumps(metrics, indent=2))
+    logger.info(f"mAP50={metrics['best_map50']:.4f} | mAP50-95={metrics['best_map5095']:.4f}")
+    try:
+        logger.info("Exporting to ONNX...")
+        model.export(format="onnx", imgsz=args.imgsz, simplify=True)
+        onnx_src = run_dir / "weights" / "best.onnx"
+        if onnx_src.exists():
+            import shutil
+            shutil.copy(onnx_src, weights_dir / "best.onnx")
+    except Exception as e:
+        logger.warning(f"ONNX export failed (non-critical): {e}")
+    logger.info("Training complete!")
+
+if __name__ == "__main__":
+    train(parse_args())
+""")
+
+w("ai_model/predict.py", """\"\"\"
+CAPVIA AI - Standalone Inference Script
+Usage: python ai_model/predict.py --image path/to/image.jpg
+\"\"\"
+from __future__ import annotations
+import argparse, json, sys
+from pathlib import Path
+import cv2
+
+def predict(image_path: str, weights: str, conf: float = 0.25, save: bool = True) -> list:
+    try:
+        from ultralytics import RTDETR
+    except ImportError:
+        print("ERROR: Install ultralytics - pip install ultralytics")
+        sys.exit(1)
+    model = RTDETR(weights)
+    results = model.predict(source=image_path, conf=conf, save=save, verbose=True)
+    detections = []
+    for result in results:
+        img = cv2.imread(image_path)
+        h, w = img.shape[:2]
+        if result.boxes is None:
+            continue
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            detections.append({"class_id":cls_id,"class_name":result.names[cls_id],"confidence":round(float(box.conf[0]),4),"bbox":[round(v) for v in box.xyxy[0].tolist()],"image_width":w,"image_height":h})
+    print(json.dumps(detections, indent=2))
+    return detections
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--image",   required=True)
+    p.add_argument("--weights", default="ai_model/weights/best_rtdetr.pt")
+    p.add_argument("--conf",    type=float, default=0.25)
+    p.add_argument("--no-save", dest="save", action="store_false")
+    args = p.parse_args()
+    predict(args.image, args.weights, args.conf, args.save)
+""")
+
+w("dataset/audit_dataset.py", """\"\"\"
+CAPVIA AI - Dataset Audit Script
+Usage: python dataset/audit_dataset.py --root car-scratches-1
+\"\"\"
+from __future__ import annotations
+import argparse, hashlib, json, os
+from collections import Counter, defaultdict
+from pathlib import Path
+import cv2, numpy as np
+
+def md5(path):
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""): h.update(chunk)
+    return h.hexdigest()
+
+def audit(root):
+    root_path = Path(root)
+    report = defaultdict(dict)
+    all_hashes, corrupted, resolutions, bbox_stats = [], [], [], []
+    class_counts = Counter()
+    for split in ["train","valid","test"]:
+        img_dir = root_path/split/"images"
+        lbl_dir = root_path/split/"labels"
+        images = list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png"))
+        report[split]["image_count"] = len(images)
+        for img_path in images:
+            img = cv2.imread(str(img_path))
+            if img is None:
+                corrupted.append(str(img_path)); continue
+            h, w = img.shape[:2]
+            resolutions.append((w,h))
+            all_hashes.append(md5(str(img_path)))
+            lbl_path = lbl_dir/(img_path.stem+".txt")
+            if lbl_path.exists():
+                for line in lbl_path.read_text().strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        class_counts[int(parts[0])] += 1
+                        cx,cy,bw,bh = map(float,parts[1:5])
+                        bbox_stats.append({"width_rel":bw,"height_rel":bh,"area_rel":bw*bh,"is_small":bw*bh<0.01})
+    hash_counter = Counter(all_hashes)
+    duplicates = sum(1 for cnt in hash_counter.values() if cnt > 1)
+    widths = [r[0] for r in resolutions]
+    heights = [r[1] for r in resolutions]
+    areas = [s["area_rel"] for s in bbox_stats]
+    small_ratio = sum(1 for s in bbox_stats if s["is_small"]) / max(len(bbox_stats),1)
+    result = {"total_images":len(all_hashes),"corrupted_images":corrupted,"duplicate_images":duplicates,"class_distribution":dict(class_counts),"resolution":{"min":(min(widths),min(heights)),"max":(max(widths),max(heights)),"mean":(int(np.mean(widths)),int(np.mean(heights)))} if widths else {},"bbox_stats":{"total_boxes":len(bbox_stats),"mean_area_rel":round(float(np.mean(areas)),6) if areas else 0,"small_object_ratio":round(small_ratio,4)},"per_split":dict(report)}
+    return result
+
+def write_html(data, output):
+    rows = "".join("<tr><td>{}</td><td>{}</td></tr>".format(k,v) for k,v in data["class_distribution"].items())
+    splits = "".join("<tr><td>{}</td><td>{}</td></tr>".format(s,v.get("image_count",0)) for s,v in data["per_split"].items())
+    css = "body{font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:2rem}h1{color:#2563eb}h2{color:#06b6d4;border-bottom:1px solid #334155;padding-bottom:.5rem}table{border-collapse:collapse;width:100%;margin-bottom:1.5rem}th{background:#1e3a8a;color:white;padding:10px;text-align:left}td{padding:8px;border-bottom:1px solid #334155}pre{background:#1e293b;padding:1rem;border-radius:8px;overflow:auto}"
+    html = "<!DOCTYPE html><html><head><meta charset=UTF-8><title>CAPVIA Dataset Audit</title><style>"+css+"</style></head><body>"
+    html += "<h1>CAPVIA AI - Dataset Audit Report</h1><h2>Summary</h2><table><tr><th>Metric</th><th>Value</th></tr>"
+    html += "<tr><td>Total Images</td><td>{}</td></tr>".format(data["total_images"])
+    html += "<tr><td>Corrupted</td><td>{}</td></tr>".format(len(data["corrupted_images"]))
+    html += "<tr><td>Duplicates</td><td>{}</td></tr>".format(data["duplicate_images"])
+    html += "<tr><td>Total Boxes</td><td>{}</td></tr>".format(data["bbox_stats"].get("total_boxes",0))
+    html += "<tr><td>Small Object Ratio</td><td>{:.1%}</td></tr></table>".format(data["bbox_stats"].get("small_object_ratio",0))
+    html += "<h2>Class Distribution</h2><table><tr><th>Class ID</th><th>Count</th></tr>"+rows+"</table>"
+    html += "<h2>Per-Split</h2><table><tr><th>Split</th><th>Images</th></tr>"+splits+"</table>"
+    html += "<h2>Raw JSON</h2><pre>"+json.dumps(data,indent=2)+"</pre></body></html>"
+    Path(output).write_text(html, encoding="utf-8")
+    print("Report saved to {}".format(output))
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default="car-scratches-1")
+    ap.add_argument("--output", default="dataset/dataset_report.html")
+    args = ap.parse_args()
+    data = audit(args.root)
+    print(json.dumps(data, indent=2))
+    write_html(data, args.output)
+""")
+
+# ── STORAGE GITKEEP ──────────────────────────────────────────────────────────
+for d in ["storage/uploads","storage/results","storage/reports","storage/masks","ai_model/weights","ai_model/training"]:
+    full = os.path.join(ROOT, d.replace("/", os.sep))
+    os.makedirs(full, exist_ok=True)
+    open(os.path.join(full, ".gitkeep"), "w").close()
+    print("  DIR:", d)
+
+print("\nPHASE 3 COMPLETE: PDF generator, main app, requirements, Docker, tests, AI model files written")

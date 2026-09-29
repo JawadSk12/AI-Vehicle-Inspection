@@ -1,0 +1,251 @@
+"""CAPVIA AI - Phase 4: Frontend Config Files"""
+import os
+
+ROOT = r"C:\Users\Jawad Shaikh\OneDrive\Downloads\Paint_defect (1)\Paint_defect"
+FE = os.path.join(ROOT, "frontend")
+
+def w(rel, content):
+    full = os.path.join(FE, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    print("  OK:", rel)
+
+w("vite.config.ts", """import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/storage': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
+  },
+})
+""")
+
+w("tailwind.config.js", """/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        primary: {
+          50:  '#eff6ff',
+          100: '#dbeafe',
+          200: '#bfdbfe',
+          300: '#93c5fd',
+          400: '#60a5fa',
+          500: '#3b82f6',
+          600: '#2563eb',
+          700: '#1d4ed8',
+          800: '#1e40af',
+          900: '#1e3a8a',
+          950: '#172554',
+        },
+        accent: {
+          50:  '#ecfeff',
+          100: '#cffafe',
+          200: '#a5f3fc',
+          300: '#67e8f9',
+          400: '#22d3ee',
+          500: '#06b6d4',
+          600: '#0891b2',
+          700: '#0e7490',
+          800: '#155e75',
+          900: '#164e63',
+        },
+        surface: {
+          50:  '#f8fafc',
+          100: '#f1f5f9',
+          200: '#e2e8f0',
+          300: '#cbd5e1',
+          400: '#94a3b8',
+          500: '#64748b',
+          600: '#475569',
+          700: '#334155',
+          800: '#1e293b',
+          900: '#0f172a',
+          950: '#020617',
+        },
+        severity: {
+          minor:    '#22c55e',
+          low:      '#84cc16',
+          moderate: '#f59e0b',
+          high:     '#f97316',
+          critical: '#ef4444',
+        },
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+      },
+      backgroundImage: {
+        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
+        'glass': 'linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01))',
+      },
+      animation: {
+        'fade-in':    'fadeIn 0.3s ease-out',
+        'slide-up':   'slideUp 0.4s ease-out',
+        'pulse-slow': 'pulse 3s ease-in-out infinite',
+        'spin-slow':  'spin 3s linear infinite',
+        'bounce-in':  'bounceIn 0.5s ease-out',
+      },
+      keyframes: {
+        fadeIn:   { from: { opacity: '0' }, to: { opacity: '1' } },
+        slideUp:  { from: { opacity: '0', transform: 'translateY(20px)' }, to: { opacity: '1', transform: 'translateY(0)' } },
+        bounceIn: { '0%': { transform: 'scale(0.9)', opacity: '0' }, '50%': { transform: 'scale(1.02)' }, '100%': { transform: 'scale(1)', opacity: '1' } },
+      },
+      boxShadow: {
+        'glow':    '0 0 20px rgba(37, 99, 235, 0.3)',
+        'glow-lg': '0 0 40px rgba(37, 99, 235, 0.4)',
+        'glass':   '0 8px 32px rgba(0, 0, 0, 0.3)',
+      },
+    },
+  },
+  plugins: [],
+}
+""")
+
+w("postcss.config.js", """export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+""")
+
+w("tsconfig.json", """{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
+""")
+
+w("index.html", """<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="CAPVIA AI - Automated Vehicle Paint Defect Detection & Assessment Platform" />
+    <meta name="keywords" content="paint defect, vehicle inspection, AI, computer vision, automotive" />
+    <title>CAPVIA AI - Paint Defect Detection Platform</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-surface-950 font-sans antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+""")
+
+w("src/index.css", """@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    @apply bg-surface-950 text-surface-100 font-sans;
+    background-image: radial-gradient(ellipse at 20% 50%, rgba(37, 99, 235, 0.06) 0%, transparent 60%),
+                      radial-gradient(ellipse at 80% 20%, rgba(6, 182, 212, 0.04) 0%, transparent 60%);
+    background-attachment: fixed;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-surface-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-surface-600 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-surface-500; }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-surface-800/60 backdrop-blur-xl border border-surface-700/50 rounded-2xl shadow-glass;
+  }
+  .glass-card-hover {
+    @apply glass-card hover:border-primary-600/40 hover:bg-surface-800/80 transition-all duration-300;
+  }
+  .btn-primary {
+    @apply bg-primary-600 hover:bg-primary-500 text-white font-semibold px-6 py-3 rounded-xl
+           transition-all duration-200 shadow-glow hover:shadow-glow-lg hover:scale-[1.02]
+           active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100;
+  }
+  .btn-secondary {
+    @apply bg-surface-700 hover:bg-surface-600 text-surface-100 font-semibold px-6 py-3 rounded-xl
+           transition-all duration-200 border border-surface-600 hover:border-surface-500;
+  }
+  .btn-ghost {
+    @apply text-surface-400 hover:text-surface-100 hover:bg-surface-800 px-4 py-2 rounded-lg transition-all duration-200;
+  }
+  .input-field {
+    @apply w-full bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500
+           rounded-xl px-4 py-3 focus:outline-none focus:border-primary-500 focus:ring-2
+           focus:ring-primary-500/20 transition-all duration-200;
+  }
+  .label {
+    @apply block text-sm font-medium text-surface-300 mb-1.5;
+  }
+  .badge-severity-minor    { @apply bg-severity-minor/20 text-severity-minor border border-severity-minor/30 text-xs font-semibold px-2.5 py-1 rounded-full; }
+  .badge-severity-low      { @apply bg-severity-low/20 text-severity-low border border-severity-low/30 text-xs font-semibold px-2.5 py-1 rounded-full; }
+  .badge-severity-moderate { @apply bg-severity-moderate/20 text-severity-moderate border border-severity-moderate/30 text-xs font-semibold px-2.5 py-1 rounded-full; }
+  .badge-severity-high     { @apply bg-severity-high/20 text-severity-high border border-severity-high/30 text-xs font-semibold px-2.5 py-1 rounded-full; }
+  .badge-severity-critical { @apply bg-severity-critical/20 text-severity-critical border border-severity-critical/30 text-xs font-semibold px-2.5 py-1 rounded-full; }
+  .stat-card {
+    @apply glass-card p-6 flex flex-col gap-2 hover:border-primary-600/30 transition-all duration-300;
+  }
+  .section-header {
+    @apply text-2xl font-bold text-surface-50 mb-1;
+  }
+  .section-sub {
+    @apply text-surface-400 text-sm;
+  }
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-surface-400 hover:text-surface-100
+           hover:bg-surface-800 transition-all duration-200 cursor-pointer font-medium;
+  }
+  .nav-item-active {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-primary-400 bg-primary-950/60
+           border border-primary-800/40 font-semibold;
+  }
+}
+""")
+
+print("Frontend config files written")

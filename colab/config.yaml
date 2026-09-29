@@ -1,0 +1,38 @@
+# CAPVIA AI - RT-DETR v2-L Training Configuration for Google Colab
+# Architecture: Real-Time Detection Transformer Large (RT-DETR v2)
+
+# Model & Data
+model: rtdetr-l.pt
+data: dataset/data.yaml
+
+# Training Hyperparameters
+epochs: 150
+imgsz: 1024
+batch: 16               # Automatically reduced if GPU memory is constrained
+device: 0               # GPU index (0 for Colab single GPU)
+workers: 4
+
+# Optimizer & Learning Rate Schedule
+optimizer: AdamW
+lr0: 0.0001             # Initial learning rate
+lrf: 0.01               # Final learning rate fraction (cosine annealing down to 1e-6)
+momentum: 0.9
+weight_decay: 0.0005
+warmup_epochs: 3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+cos_lr: true            # Cosine Annealing learning rate scheduler
+
+# Precision & Performance
+amp: true               # Mixed precision (FP16) training
+patience: 20            # Early stopping patience (epochs without improvement)
+save_period: 5          # Checkpoint every 5 epochs
+
+# Validation & Logging
+val: true
+plots: true
+verbose: true
+save: true
+exist_ok: true
+project: capvia_training
+name: rtdetr_defect_detector
