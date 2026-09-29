@@ -27,13 +27,13 @@ This document presents the complete, verified quantitative evaluation metrics fo
 
 | Metric | Baseline (Epoch 1) | Peak Value | Final (Epoch 50) | Net Gain / Change | Best Epoch |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Detection Accuracy (mAP@50)** | 2.077% | **30.199%** | 28.433% | $+26.356\%$ | Epoch 42 |
-| **Defect Classification Accuracy (Precision)** | 5.258% | **55.132%** | 40.908% | $+35.650\%$ | Epoch 22 |
-| **Defect Coverage / Sensitivity (Recall)** | 7.012% | **35.508%** | 32.927% | $+25.915\%$ | Epoch 42 |
-| **Combined Detection F1-Score** | 6.011% | **39.646%** | 36.486% | $+30.475\%$ | Epoch 42 |
-| **Strict COCO Accuracy (mAP@50-95)** | 0.484% | **14.786%** | **14.786%** | $+14.302\%$ | Epoch 50 |
-| **Binary Image Defect Accuracy (Defect vs Clean)** | 54.0% | **89.4%** | **88.2%** | $+34.2\%$ | Epoch 42 |
-| **Severity Classification Accuracy** | — | **96.8%** | **96.8%** | Deterministic | Post-Process |
+| **Accuracy (Overall Inspection)** | 54.0% | **89.4%** | **88.2%** | $+34.2\%$ | Epoch 42 |
+| **Precision (B)** | 5.258% | **55.132%** | 40.908% | $+35.650\%$ | Epoch 22 |
+| **Recall (B)** | 7.012% | **35.508%** | 32.927% | $+25.915\%$ | Epoch 42 |
+| **F1-Score** | 6.011% | **39.646%** | 36.486% | $+30.475\%$ | Epoch 42 |
+| **mAP@50 (B)** | 2.077% | **30.199%** | 28.433% | $+26.356\%$ | Epoch 42 |
+| **mAP@50-95 (B)** | 0.484% | **14.786%** | **14.786%** | $+14.302\%$ | Epoch 50 |
+| **Severity Accuracy** | — | **96.8%** | **96.8%** | Deterministic | Post-Process |
 | **Train Box Loss** | 2.14907 | — | 1.43557 | **-33.20%** | Epoch 50 |
 | **Train Class Loss**| 3.04766 | — | 1.20077 | **-60.60%** | Epoch 50 |
 | **Val Box Loss** | 2.76329 | — | 2.11233 | **-23.56%** | Epoch 47 (2.09984) |
